@@ -457,6 +457,68 @@ func TestAccKMSKey_isEnabled(t *testing.T) {
 	})
 }
 
+func TestAccKMSKey_rotationPeriod(t *testing.T) {
+	ctx := acctest.Context(t)
+	var key1, key2, key3, key4, key5 kms.KeyMetadata
+	rName := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
+	resourceName := "aws_kms_key.test"
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(ctx, t) },
+		ErrorCheck:               acctest.ErrorCheck(t, names.KMSServiceID),
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories,
+		CheckDestroy:             testAccCheckKeyDestroy(ctx),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccKeyConfig_enabledRotation(rName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckKeyExists(ctx, resourceName, &key1),
+					resource.TestCheckResourceAttr(resourceName, "is_enabled", "true"),
+					resource.TestCheckResourceAttr(resourceName, "enable_key_rotation", "true"),
+					resource.TestCheckResourceAttr(resourceName, "rotation_period", "365"),
+				),
+			},
+			{
+				Config: testAccKeyConfig_rotationPeriod(rName, 90),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckKeyExists(ctx, resourceName, &key2),
+					resource.TestCheckResourceAttr(resourceName, "is_enabled", "true"),
+					resource.TestCheckResourceAttr(resourceName, "enable_key_rotation", "true"),
+					resource.TestCheckResourceAttr(resourceName, "rotation_period", "90"),
+				),
+			},
+			{
+				Config: testAccKeyConfig_rotationPeriod(rName, 2560),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckKeyExists(ctx, resourceName, &key3),
+					resource.TestCheckResourceAttr(resourceName, "is_enabled", "true"),
+					resource.TestCheckResourceAttr(resourceName, "enable_key_rotation", "true"),
+					resource.TestCheckResourceAttr(resourceName, "rotation_period", "2560"),
+				),
+			},
+			{
+				Config: testAccKeyConfig_rotationPeriodNotSetWhenRotationDisabled(rName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckKeyExists(ctx, resourceName, &key4),
+					resource.TestCheckResourceAttr(resourceName, "is_enabled", "true"),
+					resource.TestCheckResourceAttr(resourceName, "enable_key_rotation", "false"),
+					resource.TestCheckResourceAttr(resourceName, "rotation_period", ""),
+				),
+			},
+			{
+				Config: testAccKeyConfig_disabled(rName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckKeyExists(ctx, resourceName, &key5),
+					resource.TestCheckResourceAttr(resourceName, "is_enabled", "false"),
+					resource.TestCheckResourceAttr(resourceName, "enable_key_rotation", "false"),
+					resource.TestCheckResourceAttr(resourceName, "rotation_period", ""),
+				),
+			},
+		},
+	})
+
+}
+
 func TestAccKMSKey_tags(t *testing.T) {
 	ctx := acctest.Context(t)
 	var key kms.KeyMetadata
@@ -1127,6 +1189,27 @@ resource "aws_kms_key" "test" {
   deletion_window_in_days = 7
   enable_key_rotation     = true
 }
+`, rName)
+}
+
+func testAccKeyConfig_rotationPeriod(rName string, rotationPeriod int64) string {
+	return fmt.Sprintf(`
+resource "aws_kms_key" "test" {
+  description             = %[1]q
+  is_enabled              = true
+  enable_key_rotation     = true
+  rotation_period_in_days = %[2]d
+}
+`, rName, rotationPeriod)
+}
+
+func testAccKeyConfig_rotationPeriodNotSetWhenRotationDisabled(rName string) string {
+	return fmt.Sprintf(`
+resource "aws_kms_key" "test" {
+  description         = %[1]q
+  is_enabled          = true
+  enable_key_rotation = false
+}  
 `, rName)
 }
 

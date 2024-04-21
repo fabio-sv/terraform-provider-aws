@@ -135,7 +135,7 @@ func WaitKeyPolicyPropagated(ctx context.Context, conn *kms.KMS, id, policy stri
 
 func WaitKeyRotationEnabledPropagated(ctx context.Context, conn *kms.KMS, id string, enabled bool) error {
 	checkFunc := func() (bool, error) {
-		output, err := FindKeyRotationEnabledByKeyID(ctx, conn, id)
+		output, _, err := FindKeyRotationEnabledByKeyID(ctx, conn, id)
 
 		if tfresource.NotFound(err) {
 			return false, nil
@@ -146,6 +146,28 @@ func WaitKeyRotationEnabledPropagated(ctx context.Context, conn *kms.KMS, id str
 		}
 
 		return aws.BoolValue(output) == enabled, nil
+	}
+	opts := tfresource.WaitOpts{
+		ContinuousTargetOccurence: 5,
+		MinTimeout:                1 * time.Second,
+	}
+
+	return tfresource.WaitUntil(ctx, KeyRotationUpdatedTimeout, checkFunc, opts)
+}
+
+func WaitKeyRotationPeriodPropagated(ctx context.Context, conn *kms.KMS, id string, rotationPeriod int64) error {
+	checkFunc := func() (bool, error) {
+		_, output, err := FindKeyRotationEnabledByKeyID(ctx, conn, id)
+
+		if tfresource.NotFound(err) {
+			return false, nil
+		}
+
+		if err != nil {
+			return false, err
+		}
+
+		return output == aws.Int64(rotationPeriod), nil
 	}
 	opts := tfresource.WaitOpts{
 		ContinuousTargetOccurence: 5,

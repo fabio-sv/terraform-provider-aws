@@ -85,6 +85,11 @@ func ResourceKey() *schema.Resource {
 				Optional: true,
 				Default:  false,
 			},
+			"rotation_period_in_days": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				ValidateFunc: validation.IntBetween(90, 2560),
+			},
 			"is_enabled": {
 				Type:     schema.TypeBool,
 				Optional: true,
@@ -192,6 +197,12 @@ func resourceKeyCreate(ctx context.Context, d *schema.ResourceData, meta interfa
 		}
 	}
 
+	if rotationPeriodInDays := d.Get("rotation_period_in_days").(int64); d.Get("enable_key_rotation").(bool) {
+		if err := updateKeyRotationPeriod(ctx, conn, d.Id(), rotationPeriodInDays); err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating KMS Key (%s): %s", d.Id(), err)
+		}
+	}
+
 	if enabled := d.Get("is_enabled").(bool); !enabled {
 		if err := updateKeyEnabled(ctx, conn, d.Id(), enabled); err != nil {
 			return sdkdiag.AppendErrorf(diags, "creating KMS Key (%s): %s", d.Id(), err)
@@ -241,6 +252,7 @@ func resourceKeyRead(ctx context.Context, d *schema.ResourceData, meta interface
 	d.Set("customer_master_key_spec", key.metadata.CustomerMasterKeySpec)
 	d.Set("description", key.metadata.Description)
 	d.Set("enable_key_rotation", key.rotation)
+	d.Set("rotation_period_in_days", key.rotationPeriodInDays)
 	d.Set("is_enabled", key.metadata.Enabled)
 	d.Set("key_id", key.metadata.KeyId)
 	d.Set("key_usage", key.metadata.KeyUsage)
@@ -280,6 +292,12 @@ func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, meta interfa
 	if hasChange, enableKeyRotation := d.HasChange("enable_key_rotation"), d.Get("enable_key_rotation").(bool); hasChange {
 		if err := updateKeyRotationEnabled(ctx, conn, d.Id(), enableKeyRotation); err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating KMS Key (%s): %s", d.Id(), err)
+		}
+	}
+
+	if hasChange, rotationPeriodInDays := d.HasChange("rotation_period_in_days"), d.Get("rotation_period_in_days").(int64); hasChange && d.Get("enable_key_rotation").(bool) {
+		if err := updateKeyRotationPeriod(ctx, conn, d.Id(), rotationPeriodInDays); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating KMS Key (%s): (%s)", d.Id(), err)
 		}
 	}
 
@@ -342,10 +360,11 @@ func resourceKeyDelete(ctx context.Context, d *schema.ResourceData, meta interfa
 }
 
 type kmsKey struct {
-	metadata *kms.KeyMetadata
-	policy   string
-	rotation *bool
-	tags     []*kms.Tag
+	metadata             *kms.KeyMetadata
+	policy               string
+	rotation             *bool
+	rotationPeriodInDays *int64
+	tags                 []*kms.Tag
 }
 
 func findKey(ctx context.Context, conn *kms.KMS, keyID string, isNewResource bool) (*kmsKey, error) {
@@ -373,7 +392,7 @@ func findKey(ctx context.Context, conn *kms.KMS, keyID string, isNewResource boo
 		}
 
 		if aws.StringValue(key.metadata.Origin) == kms.OriginTypeAwsKms {
-			key.rotation, err = FindKeyRotationEnabledByKeyID(ctx, conn, keyID)
+			key.rotation, key.rotationPeriodInDays, err = FindKeyRotationEnabledByKeyID(ctx, conn, keyID)
 
 			if err != nil {
 				return nil, fmt.Errorf("reading KMS Key (%s) rotation enabled: %w", keyID, err)
@@ -503,11 +522,13 @@ func updateKeyRotationEnabled(ctx context.Context, conn *kms.KMS, keyID string, 
 
 		if enabled {
 			log.Printf("[DEBUG] Enabling KMS Key (%s) key rotation", keyID)
+			action = "enabling"
 			_, err = conn.EnableKeyRotationWithContext(ctx, &kms.EnableKeyRotationInput{
 				KeyId: aws.String(keyID),
 			})
 		} else {
 			log.Printf("[DEBUG] Disabling KMS Key (%s) key rotation", keyID)
+			action = "disabling"
 			_, err = conn.DisableKeyRotationWithContext(ctx, &kms.DisableKeyRotationInput{
 				KeyId: aws.String(keyID),
 			})
@@ -526,6 +547,34 @@ func updateKeyRotationEnabled(ctx context.Context, conn *kms.KMS, keyID string, 
 
 	if err != nil {
 		return fmt.Errorf("%s key rotation: waiting for completion: %w", action, err)
+	}
+
+	return nil
+}
+
+func updateKeyRotationPeriod(ctx context.Context, conn *kms.KMS, keyID string, rotationPeriod int64) error {
+	updateFunc := func() (interface{}, error) {
+		var err error
+
+		log.Printf("[DEBUG] Enabling KMS Key (%s) key rotation", keyID)
+		_, err = conn.EnableKeyRotationWithContext(ctx, &kms.EnableKeyRotationInput{
+			KeyId:                aws.String(keyID),
+			RotationPeriodInDays: aws.Int64(int64(rotationPeriod)),
+		})
+
+		return nil, err
+	}
+
+	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, KeyRotationUpdatedTimeout, updateFunc, kms.ErrCodeNotFoundException, kms.ErrCodeDisabledException)
+	if err != nil {
+		return fmt.Errorf("updating key rotation: %w", err)
+	}
+
+	// Wait for propagation since KMS is eventually consistent.
+	err = WaitKeyRotationPeriodPropagated(ctx, conn, keyID, rotationPeriod)
+
+	if err != nil {
+		return fmt.Errorf("updating key rotation: waiting for completion: %w", err)
 	}
 
 	return nil
